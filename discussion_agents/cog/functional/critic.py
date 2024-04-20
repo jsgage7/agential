@@ -47,6 +47,10 @@ def _prompt_agent(
         str: The answer from the language model, with no leading or trailing whitespace.
     """
     prompt = _build_agent_prompt(question=question, examples=examples, prompt=prompt)
+    print("AMBIGNQ EXAMPLES + PROMPT <--------------------------------------------------------------->")
+    print(prompt)
+    print("END AMBIGNQ EXAMPLES + PROMPT <--------------------------------------------------------------->")
+    print()
     out = llm(
         [
             HumanMessage(
@@ -54,6 +58,10 @@ def _prompt_agent(
             )
         ]
     ).content
+    print("MODEL OUTPUT <--------------------------------------------------------------->")
+    print(out)
+    print("END MODEL OUTPUT <--------------------------------------------------------------->")
+    print()
     assert isinstance(out, str)
     return out
 
@@ -111,6 +119,10 @@ def _prompt_critique(
         critique=critique,
         prompt=prompt,
     )
+    print("AMBIGNQ CRITIQUE EXAMPLES + PROMPT <--------------------------------------------------------------->")
+    print(prompt)
+    print("END AMBIGNQ CRITIQUE EXAMPLES + PROMPT <----------------------------------------------------------->")
+    print()
     out = llm(
         [
             HumanMessage(
@@ -118,6 +130,10 @@ def _prompt_critique(
             )
         ]
     ).content
+    print("AMBIGNQ CRITIQUE OUT <--------------------------------------------------------------->")
+    print(out)
+    print("END AMBIGNQ CRITIQUE OUT <----------------------------------------------------------->")
+    print()
 
     assert isinstance(out, str)
 
