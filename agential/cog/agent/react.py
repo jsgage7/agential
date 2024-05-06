@@ -23,8 +23,8 @@ from agential.cog.prompts.react import (
     HOTPOTQA_FEWSHOT_EXAMPLES,
     REACT_INSTRUCTION_HOTPOTQA,
 )
+from agential.utils.agent_tools import execute_python, execute_wolfram, search_google
 from agential.utils.parse import parse_action, remove_newline
-from agential.utils.python_executor import execute
 
 
 class ReActOutput(BaseModel):
@@ -165,10 +165,14 @@ class ReActAgent(BaseAgent):
                     obs = remove_newline(self.docstore.lookup(query))
                 except ValueError:
                     obs = "The last page Searched was not found, so you cannot Lookup a keyword in it. Please try one of the similar pages given."
+            elif action_type.lower() == "search_google":
+                obs = search_google(thought)
             elif action_type.lower() == "python_generator":
                 continue
             elif action_type.lower() == "python_interpreter":
-                obs = execute(thought)
+                obs = execute_python(thought)
+            elif action_type.lower() == "wolfram":
+                obs = execute_wolfram(thought)
             else:
                 obs = f"Invalid Action: {action} with action type: {action_type}. Valid Actions are Lookup[<topic>] Search[<topic>] python_generator[<question>] python_interpreter[<thought>] and Finish[<answer>]."
             self.memory.add_memories(obs)

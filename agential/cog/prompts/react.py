@@ -125,7 +125,9 @@ Action 4: Finish[NOT ENOUGH INFO]"""
 
 REACT_INSTRUCTION_GSM8k = """Determine the solution to a math problem, providing Observation that SUPPORTS the answer, or indicating if there is NOT ENOUGH INFORMATION. Action can be two types:
 (1) python_interpreter[Thought], executes given python code.
-(2) Finish[answer], which returns the answer and finishes the task.
+(2) wolfram[Thought], queries the Wolfram Alpha API (for more complex arithmatic)
+(3) search_google[Thought], searches google for general information about mathematical concepts
+(4) Finish[answer], which returns the answer and finishes the task.
 You have a maximum of {max_steps} steps.
 
 Here are some examples:
