@@ -4,13 +4,16 @@ GitHub Repository: https://github.com/microsoft/ProphetNet/tree/master/CRITIC
 Original Paper: http://arxiv.org/abs/2305.11738
 """
 
-from langchain_community.utilities.google_search import GoogleSearchAPIWrapper
+from typing import Dict, List, Optional
+
+from langchain_community.utilities.google_serper import GoogleSerperAPIWrapper
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from agential.cog.agent.base import BaseAgent
 from agential.cog.functional.critic import (
     _prompt_agent,
     _prompt_critique,
+    safe_execute,
 )
 from agential.cog.prompts.critic import (
     CRITIC_CRITIQUE_INSTRUCTION_HOTPOTQA,
@@ -26,16 +29,27 @@ class CriticAgent(BaseAgent):
     Attributes:
         llm (BaseChatModel): An instance of a language model used for generating initial answers
             and critiques.
-        search (GoogleSearchAPIWrapper): A search API wrapper used for obtaining evidence to
-            support or refute generated answers and critiques.
+        mode (str): The CRITIC agent's mode. Can be "search" or "code_intepreter".
+        search (Optional[GoogleSerperAPIWrapper]): A search API wrapper used for obtaining evidence to
+            support or refute generated answers and critiques. Defaults to None. Required if mode = "search".
     """
 
-    def __init__(self, llm: BaseChatModel, search: GoogleSearchAPIWrapper) -> None:
+    def __init__(
+        self,
+        llm: BaseChatModel,
+        mode: str,
+        search: Optional[GoogleSerperAPIWrapper] = None,
+    ) -> None:
         """Initialization."""
         super().__init__()
 
         self.llm = llm
+        self.mode = mode
         self.search = search
+        if self.mode == "search" and not self.search:
+            raise ValueError(
+                "`GoogleSerperAPIWrapper` is required when mode is 'search'."
+            )
 
     def generate(
         self,
@@ -45,9 +59,10 @@ class CriticAgent(BaseAgent):
         critique_examples: str = HOTPOTQA_FEWSHOT_EXAMPLES_CRITIC,
         critique_prompt: str = CRITIC_CRITIQUE_INSTRUCTION_HOTPOTQA,
         max_interactions: int = 7,
-        use_tool: bool = True,
+        use_search_tool: bool = True,
+        use_interpreter_tool: bool = True,
         evidence_length: int = 400,
-    ) -> str:
+    ) -> List[Dict[str, str]]:
         """Generates an answer that is refined with search results.
 
         Args:
@@ -57,59 +72,132 @@ class CriticAgent(BaseAgent):
             critique_examples (str): Few-shot examples to guide the language model in generating critiques. Defaults to HOTPOTQA_FEWSHOT_EXAMPLES_CRITIC.
             critique_prompt (str): The instruction template for generating critiques. Defaults to CRITIC_CRITIQUE_INSTRUCTION_HOTPOTQA.
             max_interactions (int): The maximum number of critique cycles. Defaults to 7.
-            use_tool (bool): Flag to decide whether to use the search tool for evidence gathering. Defaults to True.
+            use_search_tool (bool): Only for "search" mode. Flag to decide whether to use the search tool for evidence gathering. Defaults to True.
+            use_interpreter_tool (bool): Only for "code_interpreter" mode. Flag to decide whether to use the interpreter tool for code execution. Defaults to True.
             evidence_length (int): The maximum length of the evidence snippet to be included in the context. Defaults to 400.
 
         Returns:
-            str: The most refined answer after the specified number of critique iterations, or until
-            a satisfactory answer is reached.
+            List[Dict[str, str]]: A list of dictionaries.
+                "search" mode:
+                    - Each dictionary contains an "answer" and "critique". Optionally, a
+                    dictionary may include the search "query" and "search_result", and the final dictionary includes the final "revised_answer".
+                "code_interpreter" mode:
+                    - Each dictionary contains "code" and "critique". Optionally, a dictionary may include
+                    the "execution_status" and "code_answer" if use_interpreter_tool is True. If the critic
+                    improves the solution, then the dictionary will have an "improved_code" key.
         """
-        answer = _prompt_agent(
-            llm=self.llm, question=question, examples=examples, prompt=prompt
-        )
+        if self.mode == "search":
+            out = []
 
-        out, revised_answer = "", ""
-        exist_query = []
-        exist_evidence = set()
-        for idx in range(max_interactions):
-            critique = _prompt_critique(
-                llm=self.llm,
-                question=question,
-                examples=critique_examples,
-                answer=answer,
-                critique="" if not idx else out,
-                prompt=critique_prompt,
-            ).split("> Evidence: ")[0]
-            out += critique
+            answer = _prompt_agent(
+                llm=self.llm, question=question, examples=examples, prompt=prompt
+            )
 
-            if "> Search Query: " in critique:
-                _, search_query = critique.split("> Search Query:")[:2]
-                search_query = search_query.split("\n")[0].strip()
+            criticism, revised_answer = "", ""
+            for idx in range(max_interactions):
+                critique = _prompt_critique(
+                    llm=self.llm,
+                    question=question,
+                    examples=critique_examples,
+                    answer=answer,
+                    critique=criticism,
+                    prompt=critique_prompt,
+                ).split("> Evidence: ")[
+                    0
+                ]  # Stop at ""> Evidence: ".
+                criticism += critique
 
-                if use_tool:
-                    exist_query.append(search_query)
-                    for k in range(exist_query.count(search_query), 8):
-                        search_result = self.search.results(
-                            search_query, num_results=k
-                        )[-1]
-                        if search_result["snippet"] not in exist_evidence:
-                            exist_evidence.add(search_result["snippet"])
-                            break
+                out.append({"answer": answer, "critique": critique})
 
-                    context = f"""> Evidence: [{search_result['title']}] {search_result['snippet'][:evidence_length]}\n\n"""
-                    if idx == max_interactions - 2:
-                        context += f"Let's give the most possible answer.\n\nQuestion: {question}\nHere's "
-                else:
-                    context = """> Evidence: """
+                if "> Search Query: " in critique:
+                    _, search_query = critique.split("> Search Query:")[:2]
+                    search_query = search_query.split("\n")[0].strip()
 
-                out += context
-            elif "most possible answer: " in critique:
-                _, revised_answer = critique.split("most possible answer: ")
-                revised_answer = revised_answer.strip()
-                break
-            else:
-                if not critique:
+                    if use_search_tool and self.search:
+                        search_result = self.search.results(search_query)["organic"][0]
+                        context = f"""> Evidence: [{search_result['title']}] {search_result['snippet'][:evidence_length]}\n\n"""
+                        if idx == max_interactions - 2:
+                            context += f"Let's give the most possible answer.\n\nQuestion: {question}\nHere's "
+                    else:
+                        context = """> Evidence: """
+
+                    criticism += context
+                    out[idx]["query"] = search_query if use_search_tool else ""
+                    out[idx]["search_result"] = (
+                        search_result["snippet"][:evidence_length]
+                        if use_search_tool
+                        else ""
+                    )
+
+                elif "most possible answer: " in critique:
+                    _, revised_answer = critique.split("most possible answer: ")
+                    revised_answer = revised_answer.strip()
+                    out[idx]["revised_answer"] = revised_answer
                     break
-                out += f"\nLet's give the most possible answer.\n\nQuestion: {question}\nHere's "
+                else:
+                    if not critique:
+                        break
+                    criticism += f"\nLet's give the most possible answer.\n\nQuestion: {question}\nHere's "
 
-        return revised_answer
+            return out
+        elif self.mode == "code_interpreter":
+            out = []
+            code = _prompt_agent(
+                llm=self.llm, question=question, examples=examples, prompt=prompt
+            )
+
+            for idx in range(max_interactions):
+                # Get additional code execution information.
+                additional_keys = {}
+                if use_interpreter_tool:
+                    code_answer, execution_status = safe_execute(
+                        code
+                    )  # Can be None, "Exception".
+                    additional_keys = {
+                        "execution_status": execution_status,
+                        "code_answer": code_answer,
+                    }
+
+                # Generate code critique.
+                critique = _prompt_critique(
+                    llm=self.llm,
+                    question=question,
+                    examples=critique_examples,
+                    answer=code,
+                    critique="",
+                    additional_keys=additional_keys,  # type: ignore
+                    prompt=critique_prompt,
+                ).split("Here's")[
+                    0
+                ]  # Stop at Here's.
+                out.append({"code": code, "critique": critique})
+                if use_interpreter_tool:
+                    out[idx]["execution_status"] = execution_status
+                    out[idx]["code_answer"] = code_answer  # type: ignore
+
+                # Halting condition.
+                if "it is correct." in critique.lower():
+                    break
+
+                # Generate the new solution from the critique.
+                code = _prompt_critique(
+                    llm=self.llm,
+                    question=question,
+                    examples=critique_examples,
+                    answer=code,
+                    critique=critique
+                    + "\n\n"
+                    + "Here's a better solution:\n```python\n",
+                    additional_keys=additional_keys,  # type: ignore
+                    prompt=critique_prompt,
+                ).split("```")[
+                    0
+                ]  # Stop at ```.
+                out[idx]["improved_code"] = code
+
+            return out
+
+        else:
+            raise ValueError(
+                "mode must be set to either 'search' or 'code_interpreter'."
+            )
